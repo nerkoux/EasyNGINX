@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# EasyNginx — create-host launcher
+# Repo: https://github.com/nerkoux/EasyNGINX
+
+set -euo pipefail
+
+SHARE_DIR="${EASYNGINX_SHARE:-/usr/local/share/easynginx}"
+
+if [[ ! -d "$SHARE_DIR/lib" ]]; then
+    echo "[easynginx] Engine missing at $SHARE_DIR. Reinstall with install.sh." >&2
+    exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "[easynginx] python3 is required but not installed." >&2
+    exit 1
+fi
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "[easynginx] create-host must be run as root (use sudo)." >&2
+    exit 1
+fi
+
+exec python3 "$SHARE_DIR/lib/main.py" "$@"

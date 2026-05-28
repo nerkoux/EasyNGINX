@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.atlas-cache.json
+.venv/
+*.bak
+*.swp
+.DS_Store
