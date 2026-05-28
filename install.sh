@@ -263,16 +263,59 @@ ask_install_mode() {
     esac
 }
 
-pick_restore_archive() {
-    # Use the bootstrap helper from the source tree to enumerate candidates.
-    local src_dir
-    if [[ -n "${EASYNGINX_SRC:-}" && -d "$EASYNGINX_SRC" ]]; then
-        src_dir="$EASYNGINX_SRC"
-    elif [[ -d "$(dirname "$0")/lib" ]]; then
-        src_dir="$(cd "$(dirname "$0")" && pwd)"
-    else
-        die "Cannot locate EasyNginx sources for restore step."
+# ---------- Source resolution -----------------------------------------------
+# Many steps need access to the EasyNginx source tree (lib/, templates/,
+# easynginx launcher). We resolve it once and cache in EASYNGINX_SRC_DIR.
+EASYNGINX_SRC_DIR=""
+
+resolve_sources() {
+    if [[ -n "$EASYNGINX_SRC_DIR" && -d "$EASYNGINX_SRC_DIR/lib" ]]; then
+        return 0
     fi
+
+    if [[ -n "${EASYNGINX_SRC:-}" && -d "$EASYNGINX_SRC/lib" ]]; then
+        EASYNGINX_SRC_DIR="$EASYNGINX_SRC"
+        return 0
+    fi
+
+    # When running from a checkout, BASH_SOURCE points at the script.
+    if [[ -f "${BASH_SOURCE[0]:-$0}" ]]; then
+        local self_dir
+        self_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+        if [[ -d "$self_dir/lib" && -f "$self_dir/easynginx" ]]; then
+            EASYNGINX_SRC_DIR="$self_dir"
+            return 0
+        fi
+    fi
+
+    # curl | bash mode: download a tarball from GitHub.
+    log "No local source detected (likely curl-piped install)."
+    log "Downloading EasyNginx sources from GitHub..."
+    local ref="${EASYNGINX_REF:-main}"
+    local tmp
+    tmp="$(mktemp -d -t easynginx-src.XXXXXX)"
+    local url="https://codeload.github.com/nerkoux/EasyNGINX/tar.gz/refs/heads/${ref}"
+    if [[ "$ref" =~ ^v[0-9] ]]; then
+        url="https://codeload.github.com/nerkoux/EasyNGINX/tar.gz/refs/tags/${ref}"
+    fi
+    if ! curl -fsSL "$url" -o "$tmp/src.tar.gz"; then
+        die "Could not download EasyNginx sources from $url"
+    fi
+    if ! tar -xzf "$tmp/src.tar.gz" -C "$tmp"; then
+        die "Could not extract EasyNginx sources tarball."
+    fi
+    local extracted
+    extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'EasyNGINX-*' | head -n1)"
+    if [[ -z "$extracted" || ! -d "$extracted/lib" ]]; then
+        die "Downloaded archive is missing the expected layout."
+    fi
+    EASYNGINX_SRC_DIR="$extracted"
+    ok "Sources downloaded to $EASYNGINX_SRC_DIR"
+}
+
+pick_restore_archive() {
+    resolve_sources
+    local src_dir="$EASYNGINX_SRC_DIR"
 
     if [[ -n "$RESTORE_ARCHIVE" ]]; then
         if [[ ! -f "$RESTORE_ARCHIVE" ]]; then
@@ -332,12 +375,8 @@ pick_restore_archive() {
 }
 
 run_restore() {
-    local src_dir
-    if [[ -n "${EASYNGINX_SRC:-}" && -d "$EASYNGINX_SRC" ]]; then
-        src_dir="$EASYNGINX_SRC"
-    else
-        src_dir="$(cd "$(dirname "$0")" && pwd)"
-    fi
+    resolve_sources
+    local src_dir="$EASYNGINX_SRC_DIR"
 
     log "Inspecting backup: $RESTORE_ARCHIVE"
     if ! python3 "$src_dir/lib/bootstrap_restore.py" inspect "$RESTORE_ARCHIVE" >/tmp/easynginx-manifest.json 2>/dev/null; then
@@ -376,14 +415,8 @@ install_easynginx_files() {
     install -d -m 0755 "$CONFIG_DIR/backups"
     install -d -m 0755 "$LOG_DIR"
 
-    local src_dir
-    if [[ -n "${EASYNGINX_SRC:-}" && -d "$EASYNGINX_SRC" ]]; then
-        src_dir="$EASYNGINX_SRC"
-    elif [[ -d "$(dirname "$0")/lib" ]]; then
-        src_dir="$(cd "$(dirname "$0")" && pwd)"
-    else
-        die "Cannot locate EasyNginx sources. Clone the repo and run install.sh from inside it, or set EASYNGINX_SRC."
-    fi
+    resolve_sources
+    local src_dir="$EASYNGINX_SRC_DIR"
 
     cp -f "$src_dir/easynginx"          "$EZ_BIN_PATH"
     cp -f "$src_dir/lib/"*.py           "$SHARE_DIR/lib/"
