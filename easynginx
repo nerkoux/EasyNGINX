@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EasyNginx — create-host launcher
+# EasyNginx — main CLI launcher
 # Repo: https://github.com/nerkoux/EasyNGINX
 
 set -euo pipefail
@@ -16,8 +16,18 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    echo "[easynginx] create-host must be run as root (use sudo)." >&2
+# Subcommands that don't require root.
+NO_ROOT_CMDS="(--help|-h|--version|version|help)"
+
+needs_root=1
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        --help|-h|--version|help) needs_root=0 ;;
+    esac
+fi
+
+if [[ "$needs_root" == "1" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "[easynginx] easynginx must be run as root (use sudo)." >&2
     exit 1
 fi
 

@@ -1,6 +1,6 @@
 * text=auto eol=lf
 *.sh        text eol=lf
-create-host text eol=lf
+easynginx   text eol=lf
 *.py        text eol=lf
 *.conf      text eol=lf
 *.md        text eol=lf

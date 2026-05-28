@@ -1,0 +1,40 @@
+/**
+ * EasyNginx site theme.
+ * Tweaked from the Docusaurus classic preset.
+ */
+
+:root {
+  --ifm-color-primary: #1a8f63;
+  --ifm-color-primary-dark: #168057;
+  --ifm-color-primary-darker: #157952;
+  --ifm-color-primary-darkest: #116443;
+  --ifm-color-primary-light: #1f9e6f;
+  --ifm-color-primary-lighter: #21a674;
+  --ifm-color-primary-lightest: #2bbc83;
+
+  --ifm-code-font-size: 92%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #4ade80;
+  --ifm-color-primary-dark: #2ed068;
+  --ifm-color-primary-darker: #21c75f;
+  --ifm-color-primary-darkest: #1ba34d;
+  --ifm-color-primary-light: #6ce796;
+  --ifm-color-primary-lighter: #7eebab;
+  --ifm-color-primary-lightest: #b7f5d2;
+
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.10);
+}
+
+/* Make code blocks a touch denser to fit dense CLI output. */
+.markdown pre code {
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+/* Slight tweak to admonition contrast in dark mode. */
+[data-theme='dark'] .alert {
+  background-color: rgba(255, 255, 255, 0.04);
+}

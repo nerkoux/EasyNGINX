@@ -1,7 +1,7 @@
 """Firewall helpers.
 
 The installer already opens 80/443; per-host calls here are best-effort
-reminders so create-host can re-apply rules if the user has nuked them.
+reminders so `easynginx create` can re-apply rules if the user has nuked them.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Top-level command implementations for EasyNginx.
 
-Each function here corresponds to a `create-host <subcommand>` CLI verb.
+Each function here corresponds to an `easynginx <subcommand>` CLI verb.
 The interactive `cmd_create` is the workhorse; everything else manages
 existing sites or runs maintenance tasks.
 """
@@ -19,6 +19,7 @@ from base64 import b64encode
 from pathlib import Path
 from urllib.parse import urlparse
 
+import backup as backup_mod
 import certbot
 import firewall
 import nginx as nginx_mod
@@ -402,7 +403,7 @@ def cmd_create(args: argparse.Namespace, cfg: Config, console: Console) -> int:
             console.error("certbot failed:")
             for line in output.splitlines()[-15:]:
                 console.hint(line)
-            console.warn("Site is live on HTTP. Re-run create-host or "
+            console.warn("Site is live on HTTP. Re-run `easynginx create` or "
                          "`certbot --nginx -d <domain>` once DNS is in order.")
 
     console.header("Done")
@@ -518,4 +519,235 @@ def cmd_doctor(cfg: Config, console: Console) -> int:
         for line in output.splitlines():
             console.hint(line)
 
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Backup / Restore
+# ---------------------------------------------------------------------------
+
+def _human_size(n: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(n)
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
+
+def cmd_backup(args: argparse.Namespace, cfg: Config, console: Console) -> int:
+    out_dir = Path(args.output_dir)
+    opts = backup_mod.BackupOptions(
+        include_ssl=args.include_ssl,
+        include_www=args.include_www,
+        include_php=args.include_php,
+        extra_paths=list(args.include),
+        note=args.note,
+    )
+
+    console.header("Creating backup")
+    try:
+        result = backup_mod.create_backup(
+            out_dir, options=opts, label=args.label or "manual"
+        )
+    except FileNotFoundError as exc:
+        raise EasyNginxError(str(exc)) from exc
+
+    console.ok(f"Wrote {result.path}")
+    console.hint(f"size      : {_human_size(result.size_bytes)}")
+    console.hint(f"files     : {result.file_count}")
+    console.hint(f"sha256    : {result.sha256}")
+    console.hint(f"checksum  : {result.path}.sha256")
+    return 0
+
+
+def cmd_list_backups(args: argparse.Namespace, cfg: Config, console: Console) -> int:
+    primary = Path(args.dir)
+    found = backup_mod.find_backups([primary] if primary.exists() else None)
+    if not found:
+        # Fall back to the discovery search across common locations.
+        found = backup_mod.find_backups()
+
+    if not found:
+        console.info("No backups found.")
+        console.hint("Create one with: sudo easynginx backup")
+        return 0
+
+    console.header("Available backups")
+    for path in found:
+        try:
+            manifest = backup_mod.inspect_backup(path)
+        except backup_mod.RestoreError as exc:
+            console.warn(f"{path}: {exc}")
+            continue
+
+        size = path.stat().st_size
+        host = manifest.get("hostname", "?")
+        when = manifest.get("created_at", "?")
+        label = manifest.get("label", "")
+        files = len(manifest.get("files", []))
+        print(f"  • {path}")
+        console.hint(f"created : {when}  host: {host}  label: {label}")
+        console.hint(f"size    : {_human_size(size)}   files: {files}")
+        if manifest.get("note"):
+            console.hint(f"note    : {manifest['note']}")
+    return 0
+
+
+def cmd_inspect_backup(archive: str, console: Console) -> int:
+    try:
+        manifest = backup_mod.inspect_backup(Path(archive))
+    except backup_mod.RestoreError as exc:
+        raise EasyNginxError(str(exc)) from exc
+
+    console.header(f"Manifest for {archive}")
+    print(f"  version    : {manifest.get('version')}")
+    print(f"  created    : {manifest.get('created_at')}")
+    print(f"  hostname   : {manifest.get('hostname')}")
+    print(f"  distro     : {manifest.get('distro_id')} "
+          f"({manifest.get('distro_family')})")
+    print(f"  label      : {manifest.get('label')}")
+    if manifest.get("note"):
+        print(f"  note       : {manifest['note']}")
+
+    opts = manifest.get("options", {})
+    flags = []
+    if opts.get("include_ssl"):  flags.append("ssl")
+    if opts.get("include_www"):  flags.append("www")
+    if opts.get("include_php"):  flags.append("php")
+    print(f"  contents   : {', '.join(flags) or 'core only'}")
+
+    print(f"  targets    : {len(manifest.get('targets', []))} root paths")
+    for t in manifest.get("targets", []):
+        console.hint(t)
+    print(f"  files      : {len(manifest.get('files', []))}")
+    return 0
+
+
+def cmd_verify_backup(archive: str, console: Console) -> int:
+    console.header(f"Verifying {archive}")
+    try:
+        ok, issues = backup_mod.verify_backup(Path(archive))
+    except backup_mod.RestoreError as exc:
+        raise EasyNginxError(str(exc)) from exc
+    if ok:
+        console.ok("All checksums match.")
+        return 0
+    console.error("Verification failed:")
+    for line in issues:
+        console.hint(line)
+    return 1
+
+
+def _pick_backup_interactive(console: Console) -> Path | None:
+    candidates = backup_mod.find_backups()
+    if not candidates:
+        console.warn("No backups found in the usual locations.")
+        manual = console.ask(
+            "Path to backup .tar.gz", allow_empty=True,
+            validator=lambda s: (Path(s).exists(), "File does not exist."),
+        )
+        return Path(manual) if manual else None
+
+    console.header("Pick a backup to restore")
+    for i, path in enumerate(candidates, 1):
+        try:
+            mf = backup_mod.inspect_backup(path)
+            label = mf.get("label", "")
+            when = mf.get("created_at", "?")
+            host = mf.get("hostname", "?")
+            print(f"  {i}. {path.name}")
+            console.hint(f"{when}  host: {host}  label: {label}")
+        except backup_mod.RestoreError:
+            print(f"  {i}. {path.name}  (manifest unreadable)")
+    print(f"  {len(candidates) + 1}. Provide a custom path")
+
+    while True:
+        raw = input(f"  Choose [1-{len(candidates) + 1}]: ").strip()
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(candidates):
+                return candidates[idx - 1]
+            if idx == len(candidates) + 1:
+                manual = console.ask(
+                    "Path to backup .tar.gz",
+                    validator=lambda s: (Path(s).exists(), "File does not exist."),
+                )
+                return Path(manual)
+        console.warn("Invalid selection.")
+
+
+def cmd_restore(args: argparse.Namespace, cfg: Config, console: Console) -> int:
+    archive = Path(args.archive) if args.archive else _pick_backup_interactive(console)
+    if not archive:
+        console.warn("Restore cancelled.")
+        return 0
+    if not archive.exists():
+        raise EasyNginxError(f"Backup not found: {archive}")
+
+    try:
+        manifest = backup_mod.inspect_backup(archive)
+    except backup_mod.RestoreError as exc:
+        raise EasyNginxError(str(exc)) from exc
+
+    console.header("Restore preview")
+    print(f"  archive  : {archive}")
+    print(f"  created  : {manifest.get('created_at')}")
+    print(f"  hostname : {manifest.get('hostname')}")
+    print(f"  distro   : {manifest.get('distro_id')} "
+          f"({manifest.get('distro_family')})")
+    print(f"  files    : {len(manifest.get('files', []))}")
+
+    if manifest.get("distro_family") and manifest["distro_family"] != cfg.distro_family:
+        console.warn(
+            f"Backup is from {manifest['distro_family']} but this host is "
+            f"{cfg.distro_family}. Paths will be restored as captured."
+        )
+
+    if not args.yes and not console.confirm(
+        "This will overwrite /etc/nginx and /etc/easynginx (a safety snapshot will be taken first). Continue?",
+        default=False,
+    ):
+        console.warn("Restore cancelled.")
+        return 0
+
+    snapshot_dir = cfg.config_dir / "backups" / "snapshots"
+    try:
+        result = backup_mod.restore_backup(
+            archive,
+            safety_snapshot_dir=snapshot_dir,
+            overwrite=args.overwrite,
+            skip_verify=args.skip_verify,
+        )
+    except backup_mod.RestoreError as exc:
+        raise EasyNginxError(str(exc)) from exc
+
+    if result["snapshot_path"]:
+        console.ok(f"Pre-restore snapshot saved to {result['snapshot_path']}")
+
+    for top in result["restored"]:
+        console.ok(f"Restored {top}")
+
+    # Validate and reload.
+    ok, output = v.nginx_test()
+    if not ok:
+        console.error("nginx -t failed after restore:")
+        for line in output.splitlines():
+            console.hint(line)
+        if result["snapshot_path"]:
+            console.warn(
+                "Your previous /etc/nginx is preserved at "
+                f"{result['snapshot_path']}. Extract it manually if you need to roll back."
+            )
+        raise EasyNginxError("Restore left nginx in a bad state. Investigate before reloading.")
+
+    console.ok("nginx -t passed.")
+    ok, _ = nginx_mod.reload_nginx()
+    if ok:
+        console.ok("nginx reloaded.")
+    else:
+        console.warn("nginx reload reported an issue; check 'systemctl status nginx'.")
+
+    console.header("Restore complete")
     return 0

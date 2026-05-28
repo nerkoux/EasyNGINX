@@ -8,8 +8,8 @@
          │ installs
          ▼
   ┌──────────────┐                             ┌────────────────────────┐
-  │ create-host  │   exec → python3 main.py    │ /usr/local/share/      │
-  │ (bash shim)  │ ──────────────────────────▶ │   easynginx/lib/*.py   │
+  │  easynginx   │   exec → python3 main.py    │ /usr/local/share/      │
+  │  (bash shim) │ ──────────────────────────▶ │   easynginx/lib/*.py   │
   └──────────────┘                             │   easynginx/templates/ │
                                                └────────────────────────┘
 ```

@@ -25,6 +25,23 @@ err()  { printf '%s[err ]%s %s\n'      "$C_RED" "$C_RESET" "$*" >&2; }
 
 die() { err "$*"; exit 1; }
 
+print_banner() {
+    # If output is being piped, skip the banner so log scrapers stay clean.
+    [[ -t 1 ]] || return 0
+    cat <<'BANNER'
+
+     ______                 _   _____________   ___  __
+   / ____/___ ________  __/ | / / ____/  _/ | / / |/ /
+  / __/ / __ `/ ___/ / / /  |/ / / __ / //  |/ /|   / 
+ / /___/ /_/ (__  ) /_/ / /|  / /_/ // // /|  //   |  
+/_____/\__,_/____/\__, /_/ |_/\____/___/_/ |_//_/|_|  
+                 /____/                                            
+
+BANNER
+    printf '  %sFriendly nginx setup for everyone.%s\n' "$C_BOLD" "$C_RESET"
+    printf '  %shttps://github.com/nerkoux/EasyNGINX%s\n\n' "$C_CYAN" "$C_RESET"
+}
+
 # ---------- Sanity checks ----------------------------------------------------
 require_root() {
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -206,11 +223,148 @@ configure_firewall() {
     esac
 }
 
-# ---------- Install EasyNginx files -----------------------------------------
+# ---------- EasyNginx files ---------------------------------------------
 SHARE_DIR="/usr/local/share/easynginx"
-BIN_PATH="/usr/local/bin/create-host"
+EZ_BIN_PATH="/usr/local/bin/easynginx"
 CONFIG_DIR="/etc/easynginx"
 LOG_DIR="/var/log/easynginx"
+
+# Modes: "fresh" (default) or "restore". Set by ask_install_mode().
+INSTALL_MODE="fresh"
+RESTORE_ARCHIVE=""
+
+ask_install_mode() {
+    if [[ -n "${EASYNGINX_RESTORE:-}" ]]; then
+        INSTALL_MODE="restore"
+        RESTORE_ARCHIVE="$EASYNGINX_RESTORE"
+        log "Non-interactive restore requested: $RESTORE_ARCHIVE"
+        return
+    fi
+
+    if [[ "${EASYNGINX_FRESH:-0}" == "1" ]]; then
+        INSTALL_MODE="fresh"
+        return
+    fi
+
+    if [[ ! -t 0 ]]; then
+        # Piped install — default to fresh unless EASYNGINX_RESTORE was given.
+        INSTALL_MODE="fresh"
+        return
+    fi
+
+    printf '\n%sChoose install mode:%s\n' "$C_BOLD" "$C_RESET"
+    printf '  1) Fresh install (default)\n'
+    printf '  2) Restore from a previous EasyNginx backup\n'
+    local choice
+    read -r -p "  Select [1-2]: " choice || choice=""
+    case "${choice:-1}" in
+        2) INSTALL_MODE="restore" ;;
+        *) INSTALL_MODE="fresh"   ;;
+    esac
+}
+
+pick_restore_archive() {
+    # Use the bootstrap helper from the source tree to enumerate candidates.
+    local src_dir
+    if [[ -n "${EASYNGINX_SRC:-}" && -d "$EASYNGINX_SRC" ]]; then
+        src_dir="$EASYNGINX_SRC"
+    elif [[ -d "$(dirname "$0")/lib" ]]; then
+        src_dir="$(cd "$(dirname "$0")" && pwd)"
+    else
+        die "Cannot locate EasyNginx sources for restore step."
+    fi
+
+    if [[ -n "$RESTORE_ARCHIVE" ]]; then
+        if [[ ! -f "$RESTORE_ARCHIVE" ]]; then
+            die "Backup file does not exist: $RESTORE_ARCHIVE"
+        fi
+        return
+    fi
+
+    log "Searching for backups in common locations..."
+    mapfile -t candidates < <(python3 "$src_dir/lib/bootstrap_restore.py" find | awk -F'\t' '{print $2}')
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        warn "No backups found automatically."
+        local manual=""
+        while [[ -z "$manual" || ! -f "$manual" ]]; do
+            read -r -p "  Path to backup .tar.gz: " manual || manual=""
+            if [[ -z "$manual" ]]; then
+                die "Restore cancelled."
+            fi
+            if [[ ! -f "$manual" ]]; then
+                warn "File does not exist: $manual"
+                manual=""
+            fi
+        done
+        RESTORE_ARCHIVE="$manual"
+        return
+    fi
+
+    printf '\n%sAvailable backups:%s\n' "$C_BOLD" "$C_RESET"
+    python3 "$src_dir/lib/bootstrap_restore.py" find \
+        | awk -F'\t' '{printf "  %s) %s\n     %s  host: %s  label: %s\n", $1, $2, $3, $4, $5}'
+    printf '  %d) Provide a custom path\n' "$(( ${#candidates[@]} + 1 ))"
+
+    local pick=""
+    while :; do
+        read -r -p "  Choose [1-$(( ${#candidates[@]} + 1 ))]: " pick || pick=""
+        if [[ "$pick" =~ ^[0-9]+$ ]]; then
+            if (( pick >= 1 && pick <= ${#candidates[@]} )); then
+                RESTORE_ARCHIVE="${candidates[$((pick - 1))]}"
+                return
+            fi
+            if (( pick == ${#candidates[@]} + 1 )); then
+                local manual=""
+                while [[ -z "$manual" || ! -f "$manual" ]]; do
+                    read -r -p "  Path to backup .tar.gz: " manual || manual=""
+                    if [[ -z "$manual" ]]; then
+                        die "Restore cancelled."
+                    fi
+                    [[ -f "$manual" ]] || warn "File does not exist: $manual"
+                done
+                RESTORE_ARCHIVE="$manual"
+                return
+            fi
+        fi
+        warn "Invalid selection."
+    done
+}
+
+run_restore() {
+    local src_dir
+    if [[ -n "${EASYNGINX_SRC:-}" && -d "$EASYNGINX_SRC" ]]; then
+        src_dir="$EASYNGINX_SRC"
+    else
+        src_dir="$(cd "$(dirname "$0")" && pwd)"
+    fi
+
+    log "Inspecting backup: $RESTORE_ARCHIVE"
+    if ! python3 "$src_dir/lib/bootstrap_restore.py" inspect "$RESTORE_ARCHIVE" >/tmp/easynginx-manifest.json 2>/dev/null; then
+        die "Backup is unreadable or not an EasyNginx archive."
+    fi
+
+    install -d -m 0755 "$CONFIG_DIR/backups/snapshots"
+
+    log "Restoring backup (a safety snapshot will be saved first)..."
+    if ! python3 "$src_dir/lib/bootstrap_restore.py" restore "$RESTORE_ARCHIVE"; then
+        die "Restore failed. Re-run install.sh and choose 'Fresh install', or fix the archive and try again."
+    fi
+    ok "Restore complete."
+
+    log "Validating nginx config from restored files..."
+    if nginx -t >/tmp/easynginx-nginx-t.log 2>&1; then
+        ok "nginx -t passed."
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl reload nginx >/dev/null 2>&1 \
+                || systemctl restart nginx >/dev/null 2>&1 \
+                || warn "nginx reload failed; check 'systemctl status nginx'."
+        fi
+    else
+        warn "nginx -t failed after restore. Inspect /tmp/easynginx-nginx-t.log."
+        warn "Your pre-restore snapshot is at $CONFIG_DIR/backups/snapshots/"
+    fi
+}
 
 install_easynginx_files() {
     log "Installing EasyNginx engine to $SHARE_DIR ..."
@@ -231,13 +385,23 @@ install_easynginx_files() {
         die "Cannot locate EasyNginx sources. Clone the repo and run install.sh from inside it, or set EASYNGINX_SRC."
     fi
 
-    cp -f "$src_dir/create-host"        "$BIN_PATH"
+    cp -f "$src_dir/easynginx"          "$EZ_BIN_PATH"
     cp -f "$src_dir/lib/"*.py           "$SHARE_DIR/lib/"
     cp -f "$src_dir/templates/"*.conf   "$SHARE_DIR/templates/"
+    if compgen -G "$src_dir/templates/html_vendors/*.html" > /dev/null; then
+        install -d -m 0755 "$SHARE_DIR/templates/html_vendors"
+        cp -f "$src_dir/templates/html_vendors/"*.html \
+              "$SHARE_DIR/templates/html_vendors/"
+    fi
 
-    chmod 0755 "$BIN_PATH"
+    chmod 0755 "$EZ_BIN_PATH"
     chmod 0644 "$SHARE_DIR/lib/"*.py
-    chmod 0644 "$SHARE_DIR/templates/"*.conf
+    chmod 0644 "$SHARE_DIR/templates/"*.conf 2>/dev/null || true
+    chmod 0644 "$SHARE_DIR/templates/html_vendors/"*.html 2>/dev/null || true
+
+    # Older installs may have left a create-host binary behind. Remove it
+    # so the user doesn't get confused about which CLI is the real one.
+    rm -f /usr/local/bin/create-host
 
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
@@ -262,8 +426,8 @@ verify() {
     if ! command -v nginx >/dev/null 2>&1; then
         die "nginx is not on PATH after install."
     fi
-    if ! command -v create-host >/dev/null 2>&1; then
-        die "create-host is not on PATH; check $BIN_PATH"
+    if ! command -v easynginx >/dev/null 2>&1; then
+        die "easynginx is not on PATH; check $EZ_BIN_PATH"
     fi
     if ! python3 -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
         die "python3 is not available."
@@ -275,21 +439,35 @@ verify() {
 # ---------- Main -------------------------------------------------------------
 main() {
     require_root
+    print_banner
     printf '%s\n' "${C_BOLD}EasyNginx installer${C_RESET}"
     printf '%s\n' "Repo: https://github.com/nerkoux/EasyNGINX"
     printf '\n'
 
     detect_distro
+    ask_install_mode
     maybe_enable_epel
     install_packages
     enable_services
     configure_firewall
     install_easynginx_files
+
+    if [[ "$INSTALL_MODE" == "restore" ]]; then
+        pick_restore_archive
+        run_restore
+    fi
+
     verify
 
     printf '\n'
-    ok "EasyNginx is ready."
-    printf '   Run:  %ssudo create-host%s\n' "$C_BOLD" "$C_RESET"
+    if [[ "$INSTALL_MODE" == "restore" ]]; then
+        ok "EasyNginx is ready and your sites are restored."
+    else
+        ok "EasyNginx is ready."
+    fi
+    printf '   Run:  %ssudo easynginx create%s\n'          "$C_BOLD" "$C_RESET"
+    printf '         %ssudo easynginx list%s   • status • doctor\n' "$C_BOLD" "$C_RESET"
+    printf '   Backup:  %ssudo easynginx backup%s\n'        "$C_BOLD" "$C_RESET"
     printf '\n'
 }
 
