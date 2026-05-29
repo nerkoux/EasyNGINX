@@ -92,6 +92,8 @@ The closest neighbours all have a place. Here's where each one beats EasyNginx a
 
 If you already love and use one of those, keep using it — they're great. EasyNginx is for people who want stock nginx without typing the same five commands on every server they spin up.
 
+> **Want a deeper dive against EasyEngine and Webinoly?** See the [feature parity matrix and reproducible benchmark suite](https://easynginx.akshatmehta.com/comparison) (also at [`bench/`](bench/) in the repo). PRs to fix any inaccurate row are welcome.
+
 ---
 
 ## 30-second tour

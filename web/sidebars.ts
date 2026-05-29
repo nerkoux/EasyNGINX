@@ -57,6 +57,7 @@ const sidebars: SidebarsConfig = {
       ],
     },
     'architecture',
+    'comparison',
     'changelog',
   ],
 };

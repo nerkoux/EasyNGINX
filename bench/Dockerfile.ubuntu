@@ -1,0 +1,22 @@
+# Identical Ubuntu 22.04 baseline for every benchmark target.
+# Pinned to a digest in CI; for local runs the rolling tag is fine.
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Bare essentials only — every benchmarked tool installs the rest itself.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl wget sudo systemctl \
+        coreutils procps iproute2 dnsutils tar gzip xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pretend we have systemd (nginx and certbot enable units on install).
+# This stub is enough for the benchmark; we don't run the units.
+COPY systemctl-stub.sh /usr/local/bin/systemctl
+RUN chmod +x /usr/local/bin/systemctl
+
+WORKDIR /work
+CMD ["bash"]
