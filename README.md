@@ -77,6 +77,67 @@ sudo easynginx restore
 
 ---
 
+## Why EasyNginx (and why not X?)
+
+The closest neighbours all have a place. Here's where each one beats EasyNginx and where EasyNginx wins.
+
+| Tool | Strength | Weakness for the EasyNginx use case | EasyNginx vs. it |
+|---|---|---|---|
+| **[Nginx Proxy Manager](https://nginxproxymanager.com/)** | Slick web UI, Docker-first | Runs as its own appliance — your existing nginx isn't managed by it; can't audit or back up arbitrary nginx configs | EasyNginx manages the nginx that's already on the box, no extra container, no UI to maintain. |
+| **[Caddy](https://caddyserver.com/)** | Automatic HTTPS, simple Caddyfile | Different web server entirely; switching means re-learning every plugin and integration | EasyNginx keeps stock nginx so all your nginx-specific knowledge and snippets still work. |
+| **[Traefik](https://traefik.io/)** | Brilliant Docker / Kubernetes service discovery | Heavy if you have one VPS and three sites; not ideal as a hand-rolled site manager | EasyNginx is a CLI, no daemons added, no Docker required. |
+| **[Webmin / Virtualmin](https://www.virtualmin.com/)** | Whole-server admin web UI | Heavyweight Perl install with its own auth, sessions, and filesystem layout | EasyNginx is a single Python CLI, no GUI, no daemon, no auth surface. |
+| **[certbot --nginx](https://certbot.eff.org/)** | The industry-standard ACME client | Only handles certificates — you still write configs, manage backups, audits, deploys yourself | EasyNginx wraps certbot and adds creation, audit, backup, restore, cluster, atomic updates. |
+| **Ansible / Salt / Puppet roles** | Repeatable, declarative | A full IaC stack to learn for one nginx box | EasyNginx is `sudo easynginx create`. No inventory, no playbook, no DSL. |
+
+If you already love and use one of those, keep using it — they're great. EasyNginx is for people who want stock nginx without typing the same five commands on every server they spin up.
+
+---
+
+## 30-second tour
+
+```bash
+$ curl -fsSL https://raw.githubusercontent.com/nerkoux/EasyNGINX/main/install.sh | sudo bash
+$ sudo easynginx create
+
+  Domain: api.example.com
+  Site type:
+    1. Reverse proxy
+    2. Static website
+    3. PHP site
+    4. WebSocket app
+    5. Redirect
+    6. Load balancer
+  Choose [1]: 1
+  Backend URL: http://127.0.0.1:3000
+  Enable HTTPS via Let's Encrypt? [Y/n]: y
+  Email for Let's Encrypt: admin@example.com
+
+[ ok ] DNS for api.example.com → 192.0.2.10 (matches this host)
+[ ok ] Port 80 listening
+[ ok ] Upstream http://127.0.0.1:3000 reachable
+[ ok ] Wrote /etc/nginx/sites-available/api.example.com.conf
+[ ok ] Site enabled.
+[ ok ] nginx config validated.
+[ ok ] nginx reloaded.
+[ ok ] Let's Encrypt certificate issued for api.example.com.
+[ ok ] api.example.com is live at https://api.example.com/
+```
+
+What just happened: domain validation, DNS check, upstream probe, snapshot, render, write, `nginx -t`, reload, certbot issuance — all wrapped in automatic rollback if any step fails. nginx is never reloaded with a broken config.
+
+Other one-liners worth trying:
+
+```bash
+sudo easynginx audit                      # security report across every site
+sudo easynginx info api.example.com       # status + cert expiry
+sudo easynginx logs api.example.com -f    # tail access log
+sudo easynginx backup --with-www          # tarball with sha256 manifest
+sudo easynginx update check               # check GitHub for newer versions
+```
+
+---
+
 ## 📦 Install
 
 ### Recommended: one-liner
